@@ -17,7 +17,7 @@
          has_credentials/0,
          set_region/1,
          ensure_imdsv2_token_valid/0,
-         api_get_request/2]).
+         api_get_request/2, api_get_request_with_retries/3]).
 
 %% gen-server exports
 -export([start_link/0,
@@ -539,14 +539,26 @@ ensure_credentials_valid() ->
 
 
 -spec api_get_request(string(), path()) -> result().
-%% @doc Invoke an API call to an AWS service.
+%% @doc Invoke an API call to an AWS service with ?MAX_RETRIES retries.
 %% @end
 api_get_request(Service, Path) ->
   rabbit_log:debug("Invoking AWS request {Service: ~p; Path: ~p}...", [Service, Path]),
+  api_get_request_with_retries(Service, Path, ?MAX_RETRIES).
+
+-spec api_get_request_with_retries(string(), path(), number()) -> result().
+%% @doc Invoke an API call to an AWS service with retries.
+%% @end
+api_get_request_with_retries(Service, Path, Retries) ->
   ensure_credentials_valid(),
   case get(Service, Path) of
     {ok, {_Headers, Payload}} -> rabbit_log:debug("AWS request: ~s~nResponse: ~p", [Path, Payload]),
                                  {ok, Payload};
     {error, {credentials, _}} -> {error, credentials};
-    {error, Message, _}       -> {error, Message}
+    {error, Message, _}       ->
+      case Retries of
+        0 -> {error, Message};
+        _ -> rabbit_log:warning("Failed to make AWS request: ~p. Will retry (Retries left: ~p)...", [Message, Retries]),
+             timer:sleep(?LINEAR_BACK_OFF_MILLIS),
+             get(Service, Path, Retries - 1)
+      end
   end.
